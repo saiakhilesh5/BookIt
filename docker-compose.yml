@@ -1,0 +1,110 @@
+name: bookit
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: >
+        mongosh --quiet --eval
+        "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }"
+        | grep -q 1
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./server
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      CLIENT_URL: http://localhost:8080
+      MONGO_URI: mongodb://mongo:27017/bookit?replicaSet=rs0
+      EMBEDDED_DB: "false"
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change_me_access}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change_me_refresh}
+      SEAT_HOLD_MINUTES: 10
+    ports:
+      - "5000:5000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 25s
+
+  worker:
+    build: ./server
+    restart: unless-stopped
+    command: ["node", "src/worker.js"]
+    environment:
+      NODE_ENV: production
+      MONGO_URI: mongodb://mongo:27017/bookit?replicaSet=rs0
+      EMBEDDED_DB: "false"
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change_me_access}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change_me_refresh}
+      SEAT_HOLD_MINUTES: 10
+    depends_on:
+      api:
+        condition: service_healthy
+
+  client:
+    build:
+      context: ./client
+      args:
+        VITE_API_URL: /api/v1
+        VITE_SOCKET_URL: /
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # One-shot demo data loader: docker compose --profile seed run seed
+  seed:
+    build: ./server
+    profiles: ["seed"]
+    command: ["node", "src/seed.js"]
+    environment:
+      NODE_ENV: production
+      MONGO_URI: mongodb://mongo:27017/bookit?replicaSet=rs0
+      EMBEDDED_DB: "false"
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change_me_access}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change_me_refresh}
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  mongo-data:
+  redis-data:
