@@ -18,16 +18,15 @@ Seeded demo data, an organizer dashboard with charts, an admin moderation consol
 4. [Quick start](#quick-start)
 5. [Environment variables](#environment-variables)
 6. [Docker](#docker)
-7. [Deploying to the cloud](#deploying-to-the-cloud)
-8. [Testing](#testing)
-9. [Folder structure](#folder-structure)
-10. [Data model](#data-model)
-11. [How zero-overbooking works](#how-zero-overbooking-works)
-12. [API reference](#api-reference)
-13. [Security](#security)
-14. [Performance and scalability](#performance-and-scalability)
-15. [Known limitations](#known-limitations)
-16. [CI/CD](#cicd)
+7. [Testing](#testing)
+8. [Folder structure](#folder-structure)
+9. [Data model](#data-model)
+10. [How zero-overbooking works](#how-zero-overbooking-works)
+11. [API reference](#api-reference)
+12. [Security](#security)
+13. [Performance and scalability](#performance-and-scalability)
+14. [Known limitations](#known-limitations)
+15. [CI/CD](#cicd)
 
 ---
 
@@ -177,7 +176,7 @@ Seed creates 14 users, 14 events across 10 categories (12 published, one `pendin
 |---|---|---|
 | `NODE_ENV` | `development` | `development` · `test` · `production` |
 | `PORT` | `5000` | API listen port |
-| `CLIENT_URL` | `http://localhost:5173` | The one origin CORS and Socket.IO accept. Irrelevant when nginx proxies the API on the client's own origin — see [deployment](#deploying-to-the-cloud) |
+| `CLIENT_URL` | `http://localhost:5173` | CORS + cookie audience |
 | `MONGO_URI` | `mongodb://localhost:27017/bookit` | Connection string |
 | `EMBEDDED_DB` | `auto` | `true`/`auto` allow the in-process fallback, `false` requires a real server |
 | `REDIS_URL` | — | Enables BullMQ + Socket.IO Redis adapter. Unset ⇒ memory queue, single instance |
@@ -186,7 +185,6 @@ Seed creates 14 users, 14 events across 10 categories (12 published, one `pendin
 | `ACCESS_TOKEN_TTL` | `15m` | Access token lifetime |
 | `REFRESH_TOKEN_TTL_DAYS` | `7` | Refresh cookie lifetime |
 | `SEAT_HOLD_MINUTES` | `10` | Hold window |
-| `RUN_WORKERS` | on | `false` makes the API skip the in-process queue consumers and hold sweep, for a topology with a dedicated worker process (`docker-compose.yml` does exactly this) |
 | `SMTP_HOST` / `PORT` / `USER` / `PASS` | — | Unset ⇒ emails are written to the outbox collection instead of sent |
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | — | Accepted by config but **not wired** — see [limitations](#known-limitations) |
 
@@ -215,78 +213,9 @@ What the stack gives you:
 - **redis** — powers real delayed hold-expiry jobs, email queues, and cross-instance socket fan-out.
 - **api** — `server/Dockerfile`, `npm ci --omit=dev`, `HEALTHCHECK` against `/health`.
 - **worker** — same image, `command: ["node","src/worker.js"]`, so queue consumers scale independently of HTTP.
-- **client** — two-stage build: Vite build with baked-in env args, then `nginx:1.27-alpine` serving `dist` with gzip, immutable asset caching, `/api/` and `/socket.io/` (WebSocket upgrade, 3600s timeouts) proxied to the API, and SPA fallback. The upstream address and the listen port are substituted into the nginx config when the container starts (`API_UPSTREAM`, `PORT`, both optional — defaults are `http://api:5000` and `80`), so the identical image also works on a PaaS that puts the API on another domain and injects its own port.
+- **client** — two-stage build: Vite build with baked-in env args, then `nginx:1.27-alpine` serving `dist` with gzip, immutable asset caching, `/api/` and `/socket.io/` (WebSocket upgrade, 3600s timeouts) proxied to the API, and SPA fallback.
 
 `docker compose config` validates the file (it does — checked). The Compose file reads `${JWT_ACCESS_SECRET:-change_me_access}` and `${JWT_REFRESH_SECRET:-...}` from your shell or a root `.env`; those fallbacks exist so the stack boots on a first try, and **must be replaced before anything leaves your machine.**
-
----
-
-## Deploying to the cloud
-
-`render.yaml` deploys the pair that a booking app needs: **MongoDB Atlas** for data and **Render** for the two containers. Roughly fifteen minutes, and the only paid thing in it is optional.
-
-### Why this topology
-
-`bookit-web` is the nginx container from the Docker section, and it proxies `/api/` and `/socket.io/` to `bookit-api`. The browser therefore only ever talks to **one origin**, which buys three things outright:
-
-- no CORS pairing — `CLIENT_URL` never has to match a hashed `*.onrender.com` hostname that did not exist when you wrote the config;
-- the refresh cookie stays **first-party**, so `sameSite: 'strict'` + `secure: true` work as written and logins survive a page reload;
-- `VITE_API_URL` / `VITE_SOCKET_URL` stay relative (`/api/v1`, `/`), baked at build time with no knowledge of the deployment URL — moving the API costs one env var on the web service, not a rebuild of the client.
-
-`bookit-api` runs with `RUN_WORKERS` left at its default, so the mail queue and the 60s hold-expiry sweep live inside the API process. There is no `bookit-worker` service here: Render does not offer free instances for service types other than `web`, so a dedicated worker would cost money for a demo. `docker-compose.yml` keeps the split, where it is free.
-
-### 1. MongoDB Atlas
-
-1. Create a **M0 free** cluster on **AWS `us-west-2` (Oregon)**, and choose the matching Render region in the next step — every query otherwise crosses regions.
-2. **Database Access** → create a user with *Read and write to Database(s) other than admin*, scoped to `bookit` only. Use the password Atlas generates (it is URL-safe; a `$` or `@` in a hand-made password has to be percent-encoded in the URI).
-3. **Network Access** → allow `0.0.0.0/0`. This is the one deliberate security compromise of a free PaaS deploy: **Render does not provide static outbound IPs**, so every request would otherwise be refused. The least-privilege user above is what limits the blast radius — it cannot create users or read other databases. If you later move to a host with static egress, tighten the allowlist to those IPs.
-4. **Connect → Drivers** → copy the SRV URI, which looks like
-   `mongodb+srv://<user>:<password>@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority`.
-   Put the database name in it (`.../bookit?retryWrites...`) and change nothing else — the URI already selects the replica set, which is why no extra Mongoose options are needed.
-
-### 2. Render
-
-1. Push to GitHub, then install the **Render GitHub Application** on the repository (New → Blueprint will prompt you).
-2. **New → Blueprint** → select the repo → Render parses `render.yaml` and lists `bookit-api` and `bookit-web`. Confirm the region is **Oregon**. It creates and deploys both; the two `sync: false` variables arrive empty because they cannot be known before the services exist.
-3. On **`bookit-api` → Environment**, set `MONGO_URI` to the Atlas SRV string, save, and **Deploy Now**. Then check it actually reached Atlas:
-   ```bash
-   curl https://<bookit-api-url>/health   # {"status":"ok","db":"connected",...}
-   ```
-   `db: "disconnected"` means Atlas refused the connection — in almost every case the allowlist or the password. `EMBEDDED_DB=false` is set in the blueprint precisely so that failure stays visible instead of being papered over by an in-container MongoDB serving an empty database.
-   That first boot also builds every index from the schemas, including the text index search needs and the unique compound index that makes idempotency keys enforceable — `autoIndex` is on, because an Atlas cluster starts with none of them and `/events?q=…` fails with "text index required for $text query" until they exist.
-4. On **`bookit-web` → Environment**, set `API_UPSTREAM` to the API URL — `https://` scheme, host only, **no trailing slash and no path**, e.g. `https://bookit-api-abc123.onrender.com`. Save and **Deploy Now**.
-5. Open the `bookit-web` URL.
-
-`bookit-web`'s nginx listens on `$PORT` and falls back to `80`, which covers both ways a host can route to a container. If it deploys green but returns `502 Bad Gateway`, Render is routing to a port it did not announce through `PORT` — add `PORT=10000` to that service's environment and redeploy; the entrypoint picks it up.
-
-`JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` are created by Render on the first blueprint deploy (`generateValue: true`) and are reused afterwards, so redeploys do not sign anyone out. Rotating them by hand does — that is the intended behaviour of a secret rotation.
-
-### 3. Load the demo data — once
-
-```bash
-cd server
-npm ci
-MONGO_URI="mongodb+srv://<user>:<password>@cluster0.xxxxx.mongodb.net/bookit?retryWrites=true&w=majority" \
-EMBEDDED_DB=false node src/seed.js
-```
-
-Run it exactly once. `seed.js` begins by clearing the collections (it logs `Clearing existing data...`), so it is a demo data loader, not a migration — **never** add it to the blueprint as a `cron` service, because it would then delete live production data every time the schedule fires. Your laptop's IP is already covered by the `0.0.0.0/0` allowlist.
-
-Skipping it is fine too; you then get an empty catalogue and a site you populate by hand. Note that the first account you register is a plain `user`: to open the admin panel, edit that document in Atlas (`dataSources → bookit → users → role: "admin"`) or just use the seeded `admin@bookit.dev`.
-
-### 4. Optional upgrades
-
-- **Redis** — create a Render **Key Value** instance and set `REDIS_URL` (its internal URL, `redis://…:6379`, from the dashboard; internal connections need no password) on `bookit-api`. BullMQ then replaces `MemoryQueue`, so a delayed hold-expiry job or a pending email outlives an API redeploy, and the Socket.IO Redis adapter becomes available once you run more than one instance. A free Key Value instance is limited to one per workspace and keeps no data through its *own* restart, so this is a scale improvement, not a durability guarantee. It is left out of `render.yaml` because the hostname and IP allowlist are dashboard-managed values.
-- **Email** — set `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` on `bookit-api` (465 implies implicit TLS). Without credentials, mail is written to the `Mail` collection and readable in the admin outbox instead of being sent.
-- **A paid instance type** — Render spins a free web service down after **15 minutes without inbound traffic**, and waking it takes about a minute, so the first visitor after a quiet spell waits. Live WebSocket connections count as traffic, so an open event page keeps the API up. Holds still expire correctly after a wake-up, because reads run the lazy expiry pass; what you genuinely lose while asleep is queued email.
-
-### If you host the client somewhere else
-
-Serving `client/dist` from Netlify/Vercel/S3 instead of `bookit-web` splits the app across two registrable domains, which the current config does not support as-is:
-
-1. `VITE_API_URL=https://<api-url>/api/v1` and `VITE_SOCKET_URL=https://<api-url>` become **build-time** variables (they are inlined into the bundle) — rebuild after changing them.
-2. `CLIENT_URL` on `bookit-api` must be the client's exact origin, scheme and host, no trailing slash: CORS and the Socket.IO handshake both compare it literally.
-3. `sameSite` in `server/src/services/auth.service.js` must become `'none'` for production. Across different registrable domains the refresh cookie is third-party, and `'strict'` means the browser never attaches it — the symptom is a login that works until the 15-minute access token expires and every request silently 401s. `none` requires `secure`, which production already sets, and browsers demand HTTPS for both.
 
 ---
 
@@ -317,9 +246,8 @@ Tests hit the real Express app via supertest against a real Mongo. Nothing is mo
 .
 ├── .github/workflows/ci.yml
 ├── docker-compose.yml
-├── render.yaml
 ├── client/
-│   ├── Dockerfile · nginx.conf · 40-api-upstream.sh · vite.config.js
+│   ├── Dockerfile · nginx.conf · vite.config.js
 │   └── src/
 │       ├── api/         client.js (axios + refresh-on-401) · hooks.js · socket.js
 │       ├── components/  Navbar · Footer · EventCard · ui/{Button,Input,Modal,Badge,Feedback,Toast}
@@ -554,4 +482,4 @@ Locally: `cd server && npm test`, `cd client && npm run build`, `docker compose 
 
 ---
 
-*Built as a portfolio project. Run `docker compose up --build`, seed it, and try to overbook an event — it will not let you. To put it on the internet instead, see [Deploying to the cloud](#deploying-to-the-cloud).*
+*Built as a portfolio project. Run `docker compose up --build`, seed it, and try to overbook an event — it will not let you.*
