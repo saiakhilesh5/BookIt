@@ -1,0 +1,48 @@
+# Render blueprint — deploys BookIt as two services plus your MongoDB Atlas cluster.
+#
+#   bookit-web  nginx: built React client. Proxies /api and /socket.io to the API,
+#               so the browser only ever talks to one origin: no CORS pairing and
+#               the HTTP-only refresh cookie stays first-party.
+#   bookit-api  Express + Socket.IO API. In-process workers run the mail queue and
+#               the 60s hold-expiry sweep (RUN_WORKERS stays on).
+#
+# Two values cannot be known before Render creates the services, so they are
+# `sync: false` — set them once in the dashboard and Render keeps them across
+# redeploys of this blueprint:
+#   bookit-api.MONGO_URI     your Atlas SRV string
+#   bookit-web.API_UPSTREAM  the API's https URL, e.g. https://bookit-api-abc123.onrender.com
+services:
+  - type: web
+    name: bookit-api
+    runtime: docker
+    rootDir: server
+    dockerfilePath: ./Dockerfile
+    dockerContext: ./server
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGO_URI
+        sync: false
+      # Without this the API would fall back to an embedded MongoDB whenever
+      # Atlas rejects the connection (IP allowlist), silently serving a blank DB.
+      - key: EMBEDDED_DB
+        value: "false"
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: SEAT_HOLD_MINUTES
+        value: "10"
+
+  - type: web
+    name: bookit-web
+    runtime: docker
+    rootDir: client
+    dockerfilePath: ./Dockerfile
+    dockerContext: ./client
+    plan: free
+    envVars:
+      - key: API_UPSTREAM
+        sync: false

@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { env, isDev } from './env.js';
+import { env } from './env.js';
 import { logger } from '../utils/logger.js';
 
 mongoose.set('strictQuery', true);
@@ -7,7 +7,10 @@ mongoose.set('strictQuery', true);
 async function connectWithFallback() {
   try {
     await mongoose.connect(env.MONGO_URI, {
-      autoIndex: isDev || env.MONGO_URI.includes('localhost'),
+      // Indexes are declared only in the schemas, so a hosted database is unusable
+      // until ensureIndexes runs — search needs the text index, idempotency the
+      // unique compound index. Mongoose skips indexes that already exist.
+      autoIndex: true,
       serverSelectionTimeoutMS: 4000,
     });
     logger.info(`MongoDB connected: ${mongoose.connection.host}/${mongoose.connection.name}`);
