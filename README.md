@@ -2,6 +2,13 @@
 
 A production-style event and ticket-booking platform built on the MERN stack. The core problem it solves is the one every ticketing site has: **many users racing for the same finite seats, with no overselling, ever.**
 
+> **Live demo → [https://book-it-sable-ten.vercel.app](https://book-it-sable-ten.vercel.app)**
+> Frontend on Vercel · API on Render (`https://bookit-2-utvg.onrender.com/api/v1`) · MongoDB Atlas.
+> Sign in with the seeded accounts below — everything is real data in a real database, so bookings, holds and waitlists you create persist.
+> `admin@bookit.dev` · `organizer@bookit.dev` · `alex@bookit.dev`, all with password `Password123!`
+
+Built with **Code0** — see [AI development experience](#ai-development-experience-code0).
+
 ```
 React (Vite + Tailwind 4)  ──HTTP/WS──►  Express API  ──►  MongoDB 7  ◄──  BullMQ workers (Redis)
 ```
@@ -27,6 +34,7 @@ Seeded demo data, an organizer dashboard with charts, an admin moderation consol
 13. [Performance and scalability](#performance-and-scalability)
 14. [Known limitations](#known-limitations)
 15. [CI/CD](#cicd)
+16. [AI development experience (Code0)](#ai-development-experience-code0)
 
 ---
 
@@ -482,4 +490,46 @@ Locally: `cd server && npm test`, `cd client && npm run build`, `docker compose 
 
 ---
 
-*Built as a portfolio project. Run `docker compose up --build`, seed it, and try to overbook an event — it will not let you.*
+## AI development experience (Code0)
+
+**Confirmation: Code0 was used during the development of this project.** BookIt was scaffolded, implemented, debugged, tested and documented with Code0 as the development agent, working from the written product specification that defines the booking rules, the data model and the required screens.
+
+**How it was used.** Development ran as a sequence of tracked tasks rather than one large generation: each vertical slice went *schema → service → route + Zod validator → React hook → page*, and nothing was marked done until Code0 had actually run it — the Jest suite against a real MongoDB, and the finished screens in a browser with the console open. That loop is where most of the corrections came from: claims were checked against the code and the running app, and where the two disagreed the code was fixed. It also kept the environment honest about what is real and what is simulated, which is why [Known limitations](#known-limitations) names the mock payment gateway instead of implying Stripe is wired up.
+
+### Specific tasks performed with Code0
+
+| Task | What Code0 did | Where it shows up |
+|---|---|---|
+| **Component development** | Built the Tailwind 4 design tokens and the UI primitives (`Button`, `Input`, `Modal`, `Badge`, `Toast`, and the loading/empty states in `Feedback`), `EventCard`, the navbar/footer shell and all twelve page components, then split the two chart-bearing pages into `React.lazy` routes so Recharts stays out of the public bundle | `client/src/components/`, `client/src/pages/`, `client/src/App.jsx` |
+| **API creation** | Wrote the Express mount table, controllers and services for auth, events, bookings, promos, waitlist and admin — Zod schemas on every body and query, RBAC plus ownership checks in middleware, and a single error envelope with stable codes | `server/src/routes/`, `controllers/`, `services/`, `validators/`, `middleware/` |
+| **Database integration** | Modelled the seven Mongoose schemas with the indexes the real query shapes need (`{status, startsAt}`, a text index, `{user, idempotencyKey}` unique), and expressed the seat hold as **one atomic conditional `$inc`** so a double-booking is impossible at the storage layer rather than unlikely | `server/src/models/`, `server/src/config/db.js`, `services/booking.service.js` |
+| **Debugging** | Traced a response-shape leak where `.lean()` bypassed the `toJSON` transform, so list endpoints returned `_id` while detail endpoints returned `id` — the visible symptom was `key={undefined}` in six React lists. Fixed once in a serializer instead of patching each call site, then deleted 33 defensive `id ?? _id` reads from the client | `server/src/utils/serialize.js`, `services/event.service.js`, `services/admin.service.js` |
+| **Refactoring** | Put the three hold-expiry paths (delayed queue job, lazy sweep on read, 60-second interval) behind one idempotent release function, so whichever fires first wins and the other two become no-ops — then cut the initial JavaScript payload from 864 kB to 412 kB raw by moving the two dashboards behind route-level code splitting | `server/src/jobs/`, `services/booking.service.js`, `client/src/App.jsx` |
+| **Testing** | Wrote the native-ESM Jest suite (37 tests, 4 suites) that hits the real app through supertest against a real MongoDB with an in-memory fallback — including the headline proof that **50 parallel booking requests on a 10-seat tier produce exactly 10 × 201 and 40 × 409** with the seat invariant intact | `server/tests/booking.test.js`, `tests/concurrency.test.js`, `tests/setup.js` |
+
+### Features built with Code0
+
+- The zero-overbooking engine: atomic tier holds, 10-minute TTL, automatic release, and the `available + sold + held === capacity` invariant
+- Idempotency keys, so a double-clicked *Pay* button or a retried request can never create two bookings
+- FIFO waitlists that auto-promote the next person the moment a seat is released
+- Promo codes with percentage and fixed discounts, usage caps and expiry
+- Live per-tier seat availability pushed to every open event page over Socket.IO
+- QR-coded PDF tickets generated on confirmation, plus a public `/verify` page anyone can use without an account
+- Organizer dashboard with revenue, tickets-sold and capacity charts, and an admin moderation console with audit log and email outbox
+- A Docker Compose stack, a GitHub Actions pipeline, and this README
+
+### Requirement checklist
+
+| Required in the brief | Section |
+|---|---|
+| Project name and description | [BookIt](#bookit) |
+| Key features | [Features](#features) |
+| Technologies used | [Tech stack](#tech-stack) |
+| Setup and installation instructions | [Quick start](#quick-start), [Environment variables](#environment-variables), [Docker](#docker) |
+| How to run the application | [Quick start](#quick-start) (dev), [Docker](#docker) (one command), [Testing](#testing) |
+| Confirmation that Code0 was used | This section |
+| AI development experience | This section |
+
+---
+
+*Built as a portfolio project. Try the [live demo](https://book-it-sable-ten.vercel.app), or run `docker compose up --build` locally, seed it, and try to overbook an event — it will not let you.*
